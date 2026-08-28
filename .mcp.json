@@ -1,0 +1,30 @@
+{
+  "mcpServers": {
+    "agentisan": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--with-editable",
+        ".claude/scripts",
+        "python",
+        "-m",
+        "agentisan.mcp.server"
+      ]
+    },
+    "open-design": {
+      "command": "docker",
+      "args": [
+        "exec",
+        "-i",
+        "-e",
+        "OD_DATA_DIR=/app/.od",
+        "open-design",
+        "node",
+        "/app/apps/daemon/dist/cli.js",
+        "mcp",
+        "--daemon-url",
+        "http://127.0.0.1:7456"
+      ]
+    }
+  }
+}
