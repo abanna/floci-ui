@@ -12,7 +12,7 @@ USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates curl jq podman buildah fuse-overlayfs uidmap build-essential \
-        rsync zip unzip file xz-utils pigz gettext-base nodejs npm cargo rustc \
+        rsync zip unzip file xz-utils pigz gettext-base nodejs npm cargo rustc zstd \
     && rm -rf /var/lib/apt/lists/*
 # Tool parity with GitHub-hosted Ubuntu runners: build-essential (CGO/-race Go
 # tests need a C compiler — v21 missed it), rsync (agentisan-skills CI hit
@@ -23,10 +23,18 @@ RUN apt-get update \
 
 # Go toolchain: hosted/Blacksmith runners preinstall Go; agentisan-skills'
 # skill e2e tests invoke `go` directly and fail without it (v24 missed it).
-# Jobs needing a specific version still use actions/setup-go on top.
+# Installed at the RUNNER_TOOL_CACHE layout so actions/setup-go treats it as
+# a warm cache hit (no 190MB download per Go job); /usr/local/go symlink
+# keeps bare `go` on PATH for jobs that don't use setup-go.
 ARG GO_VERSION=1.25.0
-RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xz
-ENV PATH="/usr/local/go/bin:${PATH}"
+RUN set -eux; \
+    mkdir -p /opt/hostedtoolcache/go/${GO_VERSION}/x64; \
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+      | tar -xz -C /opt/hostedtoolcache/go/${GO_VERSION}/x64 --strip-components=1; \
+    touch /opt/hostedtoolcache/go/${GO_VERSION}/x64/.complete; \
+    ln -s /opt/hostedtoolcache/go/${GO_VERSION}/x64 /usr/local/go
+ENV PATH="/usr/local/go/bin:${PATH}" \
+    RUNNER_TOOL_CACHE=/opt/hostedtoolcache
 
 # CLI wrappers: `docker` and `podman` both exec the real podman; `buildah`
 # execs buildah. All three default to host networking for run/create/build

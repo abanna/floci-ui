@@ -62,9 +62,10 @@ if sudo -n mkdir -p /mnt/ram 2>/dev/null \
         GOMODCACHE=/mnt/ram/gomodcache \
         PIP_CACHE_DIR=/mnt/ram/pip-cache \
         UV_CACHE_DIR=/mnt/ram/uv-cache \
+        UV_PYTHON_INSTALL_DIR=/mnt/ram/uv-python \
         GOMEMLIMIT="${GO_MEMORY_LIMIT:-10GiB}"
-    mkdir -p "$GOCACHE" "$GOMODCACHE" "$PIP_CACHE_DIR" "$UV_CACHE_DIR" 2>/dev/null || true
-    log "tmpfs caches active at /mnt/ram ($RAM_SIZE): GOCACHE/GOMODCACHE/PIP_CACHE_DIR/UV_CACHE_DIR"
+    mkdir -p "$GOCACHE" "$GOMODCACHE" "$PIP_CACHE_DIR" "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR" 2>/dev/null || true
+    log "tmpfs caches active at /mnt/ram ($RAM_SIZE): GOCACHE/GOMODCACHE/PIP/UV + uv pythons"
 else
     log "tmpfs mount unavailable; build caches stay on disk"
 fi
@@ -89,48 +90,105 @@ GH_ORG="${GH_ORG:?GH_ORG required}"
 
 # --- Fleet-shared R2 cache sync -------------------------------------------------
 # The worker streams /cache/<key> to an R2 bucket. Domains are tarballed
-# independently; last-writer-wins (build caches tolerate stale overwrites).
+# independently (zstd: faster than gzip at better ratios); last-writer-wins
+# (build caches tolerate stale overwrites). Snapshots are skipped when the
+# cache fingerprint is unchanged — the per-job upload otherwise costs
+# ~30-60s for byte-identical data.
 CACHE_DOMAINS="gocache gomodcache uv-cache pip-cache"
 CACHE_MAX_BYTES=$((3 * 1024 * 1024 * 1024))  # skip snapshots over 3 GB
+CACHE_CHUNK_MB=64  # Workers cap request bodies; chunks stay far under it
+CACHE_STATE=/mnt/ram/.cache-fingerprint
+
+cache_dir_for() {
+    case "$1" in
+        gocache) printf '%s' "$GOCACHE" ;;
+        gomodcache) printf '%s' "$GOMODCACHE" ;;
+        uv-cache) printf '%s' "$UV_CACHE_DIR" ;;
+        pip-cache) printf '%s' "$PIP_CACHE_DIR" ;;
+    esac
+}
+
+cache_fingerprint() {
+    # size + file count + newest mtime: cheap, and stable when nothing ran
+    find "$1" -type f -printf '%s %T@\n' 2>/dev/null | awk '{s+=$1; if ($2>m) m=$2; n++} END {printf "%d %d %.0f", s, n, m}'
+}
 
 cache_restore() {
     for d in $CACHE_DOMAINS; do
-        case "$d" in
-            gocache) dir="$GOCACHE" ;;
-            gomodcache) dir="$GOMODCACHE" ;;
-            uv-cache) dir="$UV_CACHE_DIR" ;;
-            pip-cache) dir="$PIP_CACHE_DIR" ;;
-        esac
+        dir=$(cache_dir_for "$d")
         [ -n "$dir" ] && [ -d "$dir" ] || continue
-        if curl -fsS -m 240 -H "Authorization: Bearer ${WEBHOOK_SECRET}" \
-            "${WORKER_URL}/cache/v1/${d}.tar.gz" 2>/dev/null | tar -xzf - -C "$dir" 2>/dev/null; then
-            log "cache restore: $d"
+        man=$(curl -fsS -m 30 -H "Authorization: Bearer ${WEBHOOK_SECRET}" \
+            "${WORKER_URL}/cache/v1/${d}.manifest.json" 2>/dev/null) || continue
+        parts=$(printf '%s' "$man" | jq -r '.parts // empty' 2>/dev/null)
+        [ -n "${parts:-}" ] || continue
+        tmp=$(mktemp -d)
+        ok=1
+        for i in $(seq 0 $((parts - 1))); do
+            p=$(printf '%03d' "$i")
+            curl -fsS -m 240 -H "Authorization: Bearer ${WEBHOOK_SECRET}" \
+                "${WORKER_URL}/cache/v1/${d}.tar.zst.part${p}" >> "$tmp/full.tar.zst" 2>/dev/null || ok=0
+        done
+        if [ "$ok" -eq 1 ] && tar --zstd -xf "$tmp/full.tar.zst" -C "$dir" 2>/dev/null; then
+            log "cache restore: $d ($parts parts)"
+        else
+            log "cache restore: $d skipped/failed (no snapshot yet, or R2 sync error)"
         fi
+        rm -rf "$tmp"
     done
 }
 
 cache_snapshot() {
     for d in $CACHE_DOMAINS; do
-        case "$d" in
-            gocache) dir="$GOCACHE" ;;
-            gomodcache) dir="$GOMODCACHE" ;;
-            uv-cache) dir="$UV_CACHE_DIR" ;;
-            pip-cache) dir="$PIP_CACHE_DIR" ;;
-        esac
+        dir=$(cache_dir_for "$d")
         [ -n "$dir" ] && [ -d "$dir" ] || continue
         size=$(du -sb "$dir" 2>/dev/null | cut -f1)
         [ "${size:-0}" -gt 0 ] && [ "${size:-0}" -le "$CACHE_MAX_BYTES" ] || continue
-        if tar -czf - -C "$dir" . 2>/dev/null | curl -fsS -m 600 -X PUT \
-            -H "Authorization: Bearer ${WEBHOOK_SECRET}" -H 'content-type: application/octet-stream' \
-            --data-binary @- "${WORKER_URL}/cache/v1/${d}.tar.gz" >/dev/null 2>&1; then
-            log "cache snapshot: $d ($size bytes)"
+        fp=$(cache_fingerprint "$dir")
+        last=$(grep "^${d} " "$CACHE_STATE" 2>/dev/null | cut -d' ' -f2-)
+        if [ -n "$last" ] && [ "$last" = "$fp" ]; then
+            log "cache snapshot: $d unchanged, skipping"
+            continue
         fi
+        tmp=$(mktemp -d)
+        tar --zstd -cf - -C "$dir" . 2>/dev/null | split -b ${CACHE_CHUNK_MB}m - "$tmp/part." 2>/dev/null
+        n=0
+        ok=1
+        for f in $(ls "$tmp"/part.* 2>/dev/null | sort); do
+            p=$(printf '%03d' "$n")
+            tries=0
+            while [ "$tries" -lt 3 ]; do
+                if curl -fsS -m 300 -X PUT \
+                    -H "Authorization: Bearer ${WEBHOOK_SECRET}" -H 'content-type: application/octet-stream' \
+                    --data-binary @"$f" "${WORKER_URL}/cache/v1/${d}.tar.zst.part${p}" >/dev/null 2>&1; then
+                    break
+                fi
+                tries=$((tries + 1))
+                sleep 5
+            done
+            [ "$tries" -lt 3 ] || ok=0
+            n=$((n + 1))
+        done
+        # manifest is the commit point: written only after every part landed
+        if [ "$ok" -eq 1 ] && [ "$n" -gt 0 ] \
+            && printf '{"parts":%d,"bytes":%s}' "$n" "${size:-0}" | curl -fsS -m 30 -X PUT \
+                -H "Authorization: Bearer ${WEBHOOK_SECRET}" -H 'content-type: application/json' \
+                --data-binary @- "${WORKER_URL}/cache/v1/${d}.manifest.json" >/dev/null 2>&1; then
+            log "cache snapshot: $d ($size bytes, $n parts, zstd)"
+            grep -v "^${d} " "$CACHE_STATE" 2>/dev/null > "$CACHE_STATE.new" || true
+            printf '%s %s\n' "$d" "$fp" >> "$CACHE_STATE.new"
+            mv "$CACHE_STATE.new" "$CACHE_STATE"
+        else
+            log "cache snapshot: $d FAILED (size=${size:-0}, parts=$n)"
+        fi
+        rm -rf "$tmp"
     done
 }
 
 # Restore is backgrounded so runner registration isn't delayed; caches land
-# within ~a minute of boot, before most jobs start doing heavy work.
-( sleep 20; cache_restore ) &
+# within ~a minute of boot, before most jobs start doing heavy work. The
+# round-trip proof (restore, then snapshot) also verifies the R2 path at
+# every boot — a broken sync is visible in the boot logs, not silent.
+( sleep 20; cache_restore; cache_snapshot ) &
 
 mint_registration_token() {
     curl -fsS -X POST \
