@@ -1,0 +1,13 @@
+config:
+  gh-runners:cfAccountId: 97b0dab10c55d2e8a6c952eb4e4914ac
+  gh-runners:cfApiToken:
+    secure: AAABAPHJQUZEUepiidQQKYMxbq7+uPhnI8skFN40zJT+Sa3itH/TcVolvyWNZ8DYbilQYBuEm8O8TvgzYXM=
+  gh-runners:githubToken:
+    secure: AAABAEdvJTqGO5CI8tXdJEt1WTd0hleGI6+kEd382g/K0a8cLqHfbmEvYt7FsRmFmUuwiToUv+Q7Yc03jx78pMNtk7+1j72K
+  gh-runners:ghAppId:
+    secure: AAABAMRwjriwsej5m2DrvvSNB5MSzpLiaMerpQB7rR34snyLZtUHUCC+zXcbPlU3Zf1XhtAexh83
+  gh-runners:ghAppPrivateKey:
+    secure: AAABAL26XWpAIKvjFRXXGfuAqM1AYIwOwOF46WHIsPjPxegXeIjJ32Zd82AWcFnKw1U+iOHVJGoWcra1NZSIW8nN
+  gh-runners:webhookSecret:
+    secure: AAABAJB6CtwgJNMKFAQVDZA9WSIXVtIJiP2bO1YGCQx2w1ExHqppQx0eg3x1rdmwdX2yEzWSDzaYY2YXpgiPnxapJlZ5/eRtL9Ds9yZNlzY=
+  gh-runners:webhookUrl: https://nerds-run-gh-runners.solvedgg.workers.dev

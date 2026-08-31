@@ -1,0 +1,81 @@
+# GitHub Actions ephemeral runner with rootless Podman/Buildah.
+# Runs unprivileged on Cloudflare Containers (linux/amd64). No Docker daemon:
+# dockerd + rootlesskit were tried (v13–v17) and are a dead end here — CF blocks
+# /dev/net/tun (no vpnkit/slirp) and iptables. User namespaces DO work on CF,
+# so podman/buildah run directly as the container user; builds/containers use
+# host networking by default (see containers.conf below).
+ARG RUNNER_VERSION=2.337.0
+# Plain version tags track the Ubuntu 24.04 image (no -ubuntu-24.04 variant tags).
+FROM ghcr.io/actions/actions-runner:${RUNNER_VERSION}
+
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates curl jq podman buildah fuse-overlayfs uidmap build-essential \
+        rsync zip unzip file xz-utils pigz gettext-base nodejs npm cargo rustc \
+    && rm -rf /var/lib/apt/lists/*
+# Tool parity with GitHub-hosted Ubuntu runners: build-essential (CGO/-race Go
+# tests need a C compiler — v21 missed it), rsync (agentisan-skills CI hit
+# "rsync: command not found", exit 127 — v22 missed it), nodejs+npm (polyglot
+# test suites detect package managers on PATH — v25 missed npm), cargo+rustc
+# (project scorers auto-run cargo test on Rust worktrees — v26 missed it),
+# plus common archive and text utilities workflows assume present.
+
+# Go toolchain: hosted/Blacksmith runners preinstall Go; agentisan-skills'
+# skill e2e tests invoke `go` directly and fail without it (v24 missed it).
+# Jobs needing a specific version still use actions/setup-go on top.
+ARG GO_VERSION=1.25.0
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xz
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+# CLI wrappers: `docker` and `podman` both exec the real podman; `buildah`
+# execs buildah. All three default to host networking for run/create/build
+# (see network-wrapper.sh — the only networking that works on CF).
+COPY network-wrapper.sh /usr/local/bin/network-wrapper.sh
+RUN chmod +x /usr/local/bin/network-wrapper.sh \
+    && ln -sf network-wrapper.sh /usr/local/bin/docker \
+    && ln -sf network-wrapper.sh /usr/local/bin/podman \
+    && ln -sf network-wrapper.sh /usr/local/bin/buildah
+
+# Rootless defaults for the runner user:
+#   - no cgroup creation (CF's cgroup fs is not writable rootless; crun runs
+#     fine without cgroups in this single-tenant sandbox)
+#   - file lock manager (default shm locks need /dev/shm, absent in the CF
+#     sandbox; file locks live under $XDG_RUNTIME_DIR/libpod instead)
+#   - file-backed events log (no journald in the sandbox)
+# NOTE: host networking (the only mode that works on CF — no /dev/net/tun)
+# cannot be set as a config default in podman 4.9; the CLI wrappers in
+# /usr/local/bin inject --network host instead.
+# .config/cni is where podman puts its network lock files — pre-create it, and
+# chown .config itself (install -d -o only owns the leaf, not intermediate dirs).
+RUN set -eux; \
+    mkdir -p /home/runner/.config/cni /home/runner/.config/containers; \
+    chown -R runner:runner /home/runner/.config; \
+    { \
+        printf '[containers]\ncgroups = "disabled"\n\n'; \
+        printf '[engine]\nevents_logger = "file"\nlock_type = "file"\n'; \
+    } > /home/runner/.config/containers/containers.conf; \
+    chown runner:runner /home/runner/.config/containers/containers.conf
+
+# Registry mirror: common base images are pre-baked into our CF registry
+# (pulled over CF's backbone instead of docker.io). The mirror is tried first;
+# anything not present falls through to docker.io upstream.
+RUN set -eux; \
+    mkdir -p /etc/containers/registries.conf.d; \
+    { \
+        printf '[[registry]]\nprefix = "docker.io"\nlocation = "docker.io"\n'; \
+        printf '[[registry.mirror]]\nlocation = "registry.cloudflare.com/97b0dab10c55d2e8a6c952eb4e4914ac/mirror-docker.io"\n'; \
+    } > /etc/containers/registries.conf.d/999-cf-mirror.conf
+
+# Subordinate uid/gid range rootless podman maps containers into.
+RUN set -eux; \
+    uid="$(id -u runner)"; \
+    printf 'runner:%d:65536\n' "$((uid + 100000))" >> /etc/subuid; \
+    printf 'runner:%d:65536\n' "$((uid + 100000))" >> /etc/subgid
+
+USER runner
+ENV XDG_RUNTIME_DIR=/tmp/runner-runtime
+COPY --chown=runner:runner entrypoint.sh /home/runner/entrypoint.sh
+RUN chmod +x /home/runner/entrypoint.sh
+WORKDIR /home/runner
+ENTRYPOINT ["/home/runner/entrypoint.sh"]
