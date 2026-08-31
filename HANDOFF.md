@@ -78,6 +78,27 @@ comments rewritten, fork-PR trust answered (private repos, org-member forks, no 
 `pull_request`). Known hosted-parity gaps so far: gcc (v22), rsync (v23), go (v25), npm (v26).
 `docker compose`/`buildx` NOT available on cf-runners.
 
+### Perf + scale ("beast mode", 2026-08-31)
+- **6 instances** (max_instances=6; RUNNER_IDS runner-0..5). CF caps instance SIZE at standard-4
+  (4 vCPU/12 GiB/20 GB) — custom types can't exceed it; larger needs an enterprise request.
+- **8 GB tmpfs at /mnt/ram** for GOCACHE/GOMODCACHE/PIP_CACHE_DIR/UV_CACHE_DIR (2-4 GB/s vs
+  network-backed /dev/vdc) + GOMEMLIMIT=10GiB. sudo is NOPASSWD; tmpfs mounts permitted.
+- **R2 fleet cache**: bucket `nerds-run-ci-cache`, Worker CACHE binding streams /cache/v1/<key>;
+  entrypoint restores at boot (backgrounded) and snapshots after each job (≤3 GB/domain,
+  last-writer-wins).
+- **ENAM placement** (constraints.regions=["ENAM"]) — Chicago-region scheduling per Alex.
+- **docker.io → CF registry mirror** (`mirror-docker.io`; pre-baked alpine/busybox/debian-slim/
+  golang:1.25). unqualified-search-registries MUST stay defined or Docker-based actions fail
+  short-name resolution (v29 broke it, v31 fixed).
+- Idle sleep 30m → 2h (warm caches survive between pushes; bills idle memory).
+- Repo-side fixes pushed to PR branches: go-tdad test timeouts (10m→20m/40m/30m cold-cache
+  measurements), elliot trivy pin v0.2.2→v0.3.1 + gofmt config.go, demo auto-assign issues-only,
+  incidents CodeQL back to hosted (repo lacks Advanced Security — GHAS decision is Alex's).
+- KNOWN ISSUE: 3 DOs (runner-2/3/5) wedged — platform counts them running though the instances
+  list says inactive; no per-instance kill API. Fix = delete+recreate the containers app (needs
+  Alex's approval; config: v31, standard-4, instances/max 6, ENAM, DO namespace
+  38f32b04c4884c2b8a75dd6d7a4089c9). Infra PR: abanna/floci-ui#1.
+
 ### Recommended next tasks (in order)
 1. **Commit the branch** + PR (now includes SDK worker + v18–v26 image work; Alex's go-ahead pending).
 2. Let the rerun wave drain; cron `ee2c63d1` (session-only, /20min) polls PRs: failures → diagnose,

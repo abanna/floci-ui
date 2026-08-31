@@ -60,9 +60,13 @@ RUN set -eux; \
 # Registry mirror: common base images are pre-baked into our CF registry
 # (pulled over CF's backbone instead of docker.io). The mirror is tried first;
 # anything not present falls through to docker.io upstream.
+# unqualified-search-registries must stay: short image names in workflows
+# (e.g. Docker-based actions) resolve through it (v29 broke this — docker
+# actions failed with "short-name did not resolve").
 RUN set -eux; \
     mkdir -p /etc/containers/registries.conf.d; \
     { \
+        printf 'unqualified-search-registries = ["docker.io"]\n'; \
         printf '[[registry]]\nprefix = "docker.io"\nlocation = "docker.io"\n'; \
         printf '[[registry.mirror]]\nlocation = "registry.cloudflare.com/97b0dab10c55d2e8a6c952eb4e4914ac/mirror-docker.io"\n'; \
     } > /etc/containers/registries.conf.d/999-cf-mirror.conf
