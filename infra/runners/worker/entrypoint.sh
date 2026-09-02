@@ -234,6 +234,16 @@ trap on_term TERM INT
 
 attempt=0
 while true; do
+    # Cold CI is a fleet property: wipe containers/networks/volumes left by the
+    # previous job (or a crashed one) so every job starts clean — the runner
+    # is long-lived (2h warm windows), and leftover stacks break cold-CI
+    # premises ("database already exists", seeded data). Blacksmith gave each
+    # job a fresh VM; this restores that premise. Images are kept — they're
+    # the warm cache. Runs at boot and after every job.
+    podman rm -af >/dev/null 2>&1 || true
+    podman network prune -f >/dev/null 2>&1 || true
+    podman volume prune -f >/dev/null 2>&1 || true
+
     reg_token="$(mint_registration_token)" || {
         sleep $((attempt < 5 ? 15 : 60))
         attempt=$((attempt + 1))
