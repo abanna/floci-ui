@@ -28,7 +28,9 @@ case "$cmd" in
     compose)
         # docker compose (v2) against the rootless podman API socket — no
         # daemon exists. DOCKER_HOST only for this exec: podman honors it too
-        # and would go remote-client if exported globally.
+        # and would go remote-client if exported globally. shift drops the
+        # leading "compose" the docker CLI would have consumed itself.
+        shift
         exec env DOCKER_HOST="unix://${XDG_RUNTIME_DIR:-/tmp/runner-runtime}/podman.sock" \
             /usr/local/bin/docker-compose "$@" ;;
     run|create|build|bud) ;;
