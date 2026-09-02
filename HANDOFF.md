@@ -1,34 +1,40 @@
 # HANDOFF — floci-ui (updated 2026-09-02, session-end handoff)
 
-**READ THIS FIRST — where Thread A stands (2026-09-02 ~02:30Z):**
-- **Migration: 5 of 12 PRs MERGED by Alex** (agentisan-skills#302, homelab#193, attic#3,
-  elliot#4, demo-repository#2). **7 open + fully green awaiting Alex's merge**: interview#15,
-  properties#269, go-tdad#222, my-dash#2, harness-go#585,
+**READ THIS FIRST — where Thread A stands (2026-09-02 ~17:45Z):**
+- **Migration: 6 of 12 PRs MERGED by Alex** (agentisan-skills#302, homelab#193, attic#3,
+  elliot#4, demo-repository#2, properties#269). **7 open + fully green awaiting Alex's merge**:
+  interview#15, go-tdad#222, my-dash#2, harness-go#585,
   fraternal-organization-member-portal#72 (repo RENAMED from fraternal-org-portal),
-  agentisan-skills#304 (follow-up: isolate privileged release runner after #302).
+  agentisan-skills#304, **properties#271** (compose jobs → cf-runners, see below).
   **incidents#86** open with 1 red (CodeQL needs repo-level Advanced Security — fails on hosted
   too; Alex must either enable GHAS or tell us to drop `.github/workflows/codeql-analysis.yml`).
+- **COMPOSE SUPPORT SHIPPED (2026-09-02, image v41)**: properties' migrations/tests/db-regression
+  were stuck QUEUED for a day+ — Blacksmith stopped assigning runners org-wide (~Sept 1 11:08Z;
+  Alex's account to chase, not ours). Alex chose "make them live on cf-runners". Shipped:
+  image bakes **docker compose v2** (`/usr/local/bin/docker-compose`), entrypoint starts
+  **`podman system service --time=0`** at `$XDG_RUNTIME_DIR/podman.sock`, the docker shim routes
+  `compose` (with `shift`! v40 forgot it → "compose compose") with DOCKER_HOST set per-exec.
+  properties#271 moved the 3 jobs: plain `docker build` instead of buildx actions, explicit
+  readiness gates instead of `--wait` (podman healthchecks need systemd timers — absent — so
+  `--wait` and `depends_on: service_healthy` hang forever), CI compose file on
+  `network_mode: host` (no bridge on CF), minio-setup via localhost, pgvector fetched via
+  codeload tarball (GitHub git endpoints throttle shared colo egress: "expected flush after
+  ref listing") + curl added to the build. **All 7 checks green**: migrations 1m, tests 20m51s,
+  db-regression 2m6s. PR awaiting Alex's merge.
 - **Session cron `3bc7a81d`** polls the migration PRs every 20 min (fix failures, answer bot
   reviews, never merge). Session-only — died with each session, recreate on session start
   (previous: ee2c63d1). Delete when all are merged or Alex says stop.
-- **Infra PR: abanna/floci-ui#1** (5 commits: 804ea04, 4e1841e, 5d41653, cadf999, d809b50).
-  Working tree clean for runner files (HANDOFF.md itself may lag).
-- **CLOSED: demo-repository main `Proof HTML` (docker actions) — root cause found and fixed
-  live (2026-09-02 ~02:20Z).** The runner spawns `docker` with `HOME=/github/home` for
-  docker-based actions → podman finds no user containers.conf → falls back to system defaults
-  → **shm locks** → `/dev/shm` absent in the CF sandbox → "failed to get new shm lock manager".
-  NOT stale-image skew (all instances were on one digest). Fix = ship the same podman config
-  (cgroups disabled, file locks, file events) at **/etc/containers/containers.conf** in the
-  image (v39) — system config is read in every HOME/mode. Reproduced + fix validated live via
-  `nerds-run/cf-runner-test` workflow (repro matrix: baseline OK, HOME unset OK,
-  HOME=/github/home FAILS rc=125 → after /etc config OK). Demo run 33555527598 attempt 10
-  = **success** on cf-runner-0. Fleet: v39 deployed via wrangler, 6/6 runners online,
-  `max_instances` restored to **6** (wrangler.jsonc still said 3 — every wrangler deploy was
-  silently regressing the fleet scale; fixed in d809b50).
-- **Watch item**: runner-0's container died right after a successful job (02:18:42, no
-  entrypoint logs) — `POST /wake` self-heals (fresh boot + register). If wake starts failing
-  with "Maximum number of running container instances exceeded" while nothing is running,
-  that's the old zombie-slot accounting → bump `max_instances` (the prior workaround was 9).
+- **Infra PR: abanna/floci-ui#1** (8 commits; latest: 537543a compose support, deaf2ca shim
+  shift fix).
+- **CLOSED: demo-repository main `Proof HTML` (docker actions)** — root cause: runner spawns
+  `docker` with `HOME=/github/home` for docker actions → podman misses user containers.conf →
+  shm locks → no /dev/shm on CF. Fix at **/etc/containers/containers.conf** in the image (v39).
+  Demo main run green on attempt 10. `max_instances` restored to **6** (wrangler.jsonc had said
+  3 — every wrangler deploy was regressing the fleet scale; fixed in d809b50).
+- **Watch item**: containers occasionally die right after a job, and instances can boot a
+  stale layer right after an image push (a v40 straggler failed compose mid-fleet-v41). Both
+  self-heal via stop+wake; verify image identity from a job with
+  `cat /etc/containers/containers.conf` (v39+) / `/usr/local/bin/docker-compose` (v41+).
 - **Perf reality (measured)**: cf-runners are 2–4× slower per job than Blacksmith on
   compile-heavy work (disk character + cold caches); parity for light jobs. Alex declined paying
   for Blacksmith. Mitigations shipped: tmpfs RAM caches, R2 fleet cache, toolcache pre-bake,
