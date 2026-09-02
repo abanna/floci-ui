@@ -23,6 +23,12 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runner-runtime}"
 mkdir -p "$XDG_RUNTIME_DIR/libpod/locks"
 chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
 
+# Rootless podman API service: the compat socket docker compose talks to
+# (`docker compose` is shimmed to the compose binary with DOCKER_HOST set).
+# --time=0 = never idle-exit; one per container lifetime.
+nohup podman system service --time=0 \
+    "unix://$XDG_RUNTIME_DIR/podman.sock" >/tmp/podman-service.log 2>&1 &
+
 log() {
     local line="[entrypoint] $(date -u '+%Y-%m-%dT%H:%M:%SZ') $*"
     echo "$line"

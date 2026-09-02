@@ -25,6 +25,12 @@ esac
 
 cmd="$1"
 case "$cmd" in
+    compose)
+        # docker compose (v2) against the rootless podman API socket — no
+        # daemon exists. DOCKER_HOST only for this exec: podman honors it too
+        # and would go remote-client if exported globally.
+        exec env DOCKER_HOST="unix://${XDG_RUNTIME_DIR:-/tmp/runner-runtime}/podman.sock" \
+            /usr/local/bin/docker-compose "$@" ;;
     run|create|build|bud) ;;
     *) exec "$REAL" "$@" ;;
 esac

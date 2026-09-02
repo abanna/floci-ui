@@ -48,6 +48,21 @@ RUN chmod +x /usr/local/bin/network-wrapper.sh \
     && ln -sf network-wrapper.sh /usr/local/bin/podman \
     && ln -sf network-wrapper.sh /usr/local/bin/buildah
 
+# Docker Compose v2 (single Go binary). There is no docker daemon: compose
+# talks to the rootless podman API service the entrypoint starts at
+# $XDG_RUNTIME_DIR/podman.sock — the network-wrapper shim routes `docker
+# compose` here and sets DOCKER_HOST for that exec only (globally exported
+# DOCKER_HOST would flip podman itself into remote-client mode). Caveat found
+# live: compose --wait and depends_on: service_healthy hang forever — podman
+# healthchecks need systemd timers, absent in this sandbox — so workflows
+# must gate service readiness with their own exec/curl probes.
+ARG COMPOSE_VERSION=v2.39.2
+RUN mkdir -p /usr/local/lib/docker/cli-plugins \
+    && curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+      "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64" \
+    && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose \
+    && ln -sf /usr/local/lib/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose
+
 # Rootless defaults for the runner user:
 #   - no cgroup creation (CF's cgroup fs is not writable rootless; crun runs
 #     fine without cgroups in this single-tenant sandbox)
