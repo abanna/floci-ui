@@ -82,6 +82,19 @@ services:
     networks:
       - floci_default
 
+  floci-oci:
+    image: floci/floci-oci
+    profiles: ["multicloud"]
+    ports:
+      - "4599:4599"
+    volumes:
+      # OCI emulated services (buckets, instances) follow the same container-backed
+      # pattern; see the note on `floci`.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data:/app/data
+    networks:
+      - floci_default
+
   floci-seed:
     image: floci/floci-gcp
     profiles: ["multicloud"]

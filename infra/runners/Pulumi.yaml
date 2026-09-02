@@ -1,0 +1,22 @@
+name: gh-runners
+description: GitHub-side resources for the gh-runners (runner pool lives on Cloudflare, deployed out-of-band)
+runtime: go
+
+config:
+  ghOrg:
+    type: string
+    default: nerds-run
+  # Workers.dev (or custom) URL of the deployed gh-runners worker, no trailing slash
+  webhookUrl:
+    type: string
+  githubToken:
+    type: string
+    secret: true
+    # needs admin:org_hook (org webhook) + admin:org (runner group)
+  webhookSecret:
+    type: string
+    secret: true
+  # Leave empty to keep runners in the org's Default group.
+  runnerGroup:
+    type: string
+    default: ""

@@ -1,0 +1,55 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "nerds-run-gh-runners",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-08-29",
+	"observability": {
+		"enabled": true
+	},
+	"vars": {
+		"GH_ORG": "nerds-run",
+		// empty string = keep the org's Default runner group
+		"RUNNER_GROUP": "",
+		"RUNNER_LABELS": "cf-runner"
+	},
+	"secrets": {
+		"required": ["GH_PAT", "WEBHOOK_SECRET"]
+	},
+	"containers": [
+		{
+			"class_name": "RunnerContainer",
+			"image": "./Dockerfile",
+			"max_instances": 6,
+			"instance_type": "standard-4",
+			// Don't replace instances that picked up a job seconds before a deploy.
+			"rollout_active_grace_period": 300
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "RUNNER_CONTAINER",
+				"class_name": "RunnerContainer"
+			}
+		]
+	},
+	// Persistent fleet-shared build cache: containers sync cache tarballs
+	// through the /cache endpoints, which stream to/from this bucket.
+	"r2_buckets": [
+		{
+			"binding": "CACHE",
+			"bucket_name": "nerds-run-ci-cache"
+		}
+	],
+	// Required live export declaration for container-backed Durable Objects —
+	// without it the container binding never establishes (containers exit instantly).
+	"exports": {
+		"RunnerContainer": {
+			"type": "durable-object",
+			"storage": "sqlite"
+		}
+	},
+	// NOTE: the v1 new_sqlite_classes migration was applied via the API during
+	// bootstrap; wrangler re-sending it fails with 10074. Re-add only if you
+	// ever bootstrap a fresh worker from scratch.
+}

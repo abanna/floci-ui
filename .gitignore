@@ -71,3 +71,10 @@ temp/
 
 data
 local
+generations/
+
+# infra/runners (Cloudflare worker + runner image)
+.wrangler/
+.dev.vars
+infra/runners/worker/.wrangler/
+infra/runners/runners
