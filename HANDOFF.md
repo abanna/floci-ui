@@ -31,10 +31,18 @@
   shm locks → no /dev/shm on CF. Fix at **/etc/containers/containers.conf** in the image (v39).
   Demo main run green on attempt 10. `max_instances` restored to **6** (wrangler.jsonc had said
   3 — every wrangler deploy was regressing the fleet scale; fixed in d809b50).
-- **Watch item**: containers occasionally die right after a job, and instances can boot a
-  stale layer right after an image push (a v40 straggler failed compose mid-fleet-v41). Both
-  self-heal via stop+wake; verify image identity from a job with
-  `cat /etc/containers/containers.conf` (v39+) / `/usr/local/bin/docker-compose` (v41+).
+- **COLD-CI IS A FLEET PROPERTY (2026-09-02 ~23:45Z, image v42)**: the entrypoint loop wipes
+  job containers/networks/volumes between jobs (`podman rm -af` + network/volume prune, images
+  kept as warm cache) — long-lived runners otherwise carry a previous job's compose stack into
+  the next (properties main broke with "CREATE DATABASE: already exists" after #271 merged).
+  properties#272 (workflow-side reset) closed as superseded; main's failed run verified green
+  on the v42 fleet with no workflow change.
+- **OPS-CRITICAL: stop+wake after deploys MUST be verified at the platform level.** SDK
+  `probe=stop` can no-op on wedged containers; a wake then re-registers OLD-image runners that
+  instantly grab jobs (v41 stragglers served two failed reruns). Recipe: `probe=stop` ×6 →
+  sleep 90 → **GET instances API until ALL state=inactive** → wake → verify 6 registrations →
+  then trigger jobs. A job that fails suspiciously fast (seconds into a step that needs a slow
+  cold build) is on a warm straggler — check its runner_name and started_at vs deploy time.
 - **Perf reality (measured)**: cf-runners are 2–4× slower per job than Blacksmith on
   compile-heavy work (disk character + cold caches); parity for light jobs. Alex declined paying
   for Blacksmith. Mitigations shipped: tmpfs RAM caches, R2 fleet cache, toolcache pre-bake,
