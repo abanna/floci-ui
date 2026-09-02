@@ -19,7 +19,7 @@
 		{
 			"class_name": "RunnerContainer",
 			"image": "./Dockerfile",
-			"max_instances": 3,
+			"max_instances": 6,
 			"instance_type": "standard-4",
 			// Don't replace instances that picked up a job seconds before a deploy.
 			"rollout_active_grace_period": 300

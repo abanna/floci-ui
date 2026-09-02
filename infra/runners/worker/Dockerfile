@@ -59,13 +59,21 @@ RUN chmod +x /usr/local/bin/network-wrapper.sh \
 # /usr/local/bin inject --network host instead.
 # .config/cni is where podman puts its network lock files — pre-create it, and
 # chown .config itself (install -d -o only owns the leaf, not intermediate dirs).
+# The same settings also go to /etc/containers/containers.conf: podman only
+# reads the USER config via $HOME/.config, and the runner's docker-action
+# invocations have shown up with HOME unset — podman then falls back to system
+# config, whose defaults want shm locks, which need /dev/shm (absent in the CF
+# sandbox) → "failed to get new shm lock manager" kills every docker action.
+# System config is read in every invocation mode, so the fix belongs there;
+# the user copy stays for explicitness.
 RUN set -eux; \
     mkdir -p /home/runner/.config/cni /home/runner/.config/containers; \
     chown -R runner:runner /home/runner/.config; \
     { \
         printf '[containers]\ncgroups = "disabled"\n\n'; \
         printf '[engine]\nevents_logger = "file"\nlock_type = "file"\n'; \
-    } > /home/runner/.config/containers/containers.conf; \
+    } | tee /home/runner/.config/containers/containers.conf \
+            >/etc/containers/containers.conf; \
     chown runner:runner /home/runner/.config/containers/containers.conf
 
 # Registry mirror: common base images are pre-baked into our CF registry
