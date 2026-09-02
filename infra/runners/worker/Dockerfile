@@ -32,7 +32,10 @@ RUN set -eux; \
     curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
       | tar -xz -C /opt/hostedtoolcache/go/${GO_VERSION}/x64 --strip-components=1; \
     touch /opt/hostedtoolcache/go/${GO_VERSION}/x64/.complete; \
-    ln -s /opt/hostedtoolcache/go/${GO_VERSION}/x64 /usr/local/go
+    ln -s /opt/hostedtoolcache/go/${GO_VERSION}/x64 /usr/local/go; \
+    # runner owns the toolcache: setup-go must be able to add other versions
+    # (ranged pins resolve to newer patches than the pre-baked one)
+    chown -R runner:runner /opt/hostedtoolcache
 ENV PATH="/usr/local/go/bin:${PATH}" \
     RUNNER_TOOL_CACHE=/opt/hostedtoolcache
 
@@ -78,6 +81,14 @@ RUN set -eux; \
         printf '[[registry]]\nprefix = "docker.io"\nlocation = "docker.io"\n'; \
         printf '[[registry.mirror]]\nlocation = "registry.cloudflare.com/97b0dab10c55d2e8a6c952eb4e4914ac/mirror-docker.io"\n'; \
     } > /etc/containers/registries.conf.d/999-cf-mirror.conf
+
+# GitHub Actions docker-based actions mount /github/* INTO their containers
+# and run with --workdir /github/workspace. Docker's daemon auto-creates these
+# paths in the container; podman does not ("workdir does not exist" /
+# "cannot resolve /github/home") — so the runner image must carry them.
+RUN mkdir -p /github/home /github/workflow /github/runner_temp \
+    /github/file_commands /github/workspace \
+    && chown -R runner:runner /github
 
 # Subordinate uid/gid range rootless podman maps containers into.
 RUN set -eux; \

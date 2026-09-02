@@ -44,7 +44,11 @@ for a in "$@"; do
         /*:/*)
             src=${a%%:*}
             if [ ! -e "$src" ]; then
-                sudo -n mkdir -p "$src" 2>/dev/null
+                if sudo -n mkdir -p "$src" 2>/dev/null; then
+                    echo "shim: pre-created mount source $src" >&2
+                else
+                    echo "shim: FAILED to pre-create $src" >&2
+                fi
                 case "$src" in
                     */docker.sock) sudo -n touch "$src" 2>/dev/null ;;
                 esac
