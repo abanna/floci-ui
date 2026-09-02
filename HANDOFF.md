@@ -1,10 +1,38 @@
-# HANDOFF — floci-ui (updated 2026-08-30)
+# HANDOFF — floci-ui (updated 2026-09-02, session-end handoff)
 
-Two active threads. **Thread A (gh-runners)** is new this session and is LIVE in production.
-**Thread B (console design in OpenDesign)** is paused mid-stream — full state preserved below.
-
-Linear: still no project for either thread (memory `floci-no-linear-yet`) — no issue tracking
-beyond this file. ADRs still planned for console-on-emulated-cloud + dynamic service specs.
+**READ THIS FIRST — where Thread A stands (2026-09-02 ~02:30Z):**
+- **Migration: 5 of 12 PRs MERGED by Alex** (agentisan-skills#302, homelab#193, attic#3,
+  elliot#4, demo-repository#2). **7 open + fully green awaiting Alex's merge**: interview#15,
+  properties#269, go-tdad#222, my-dash#2, harness-go#585,
+  fraternal-organization-member-portal#72 (repo RENAMED from fraternal-org-portal),
+  agentisan-skills#304 (follow-up: isolate privileged release runner after #302).
+  **incidents#86** open with 1 red (CodeQL needs repo-level Advanced Security — fails on hosted
+  too; Alex must either enable GHAS or tell us to drop `.github/workflows/codeql-analysis.yml`).
+- **Session cron `3bc7a81d`** polls the migration PRs every 20 min (fix failures, answer bot
+  reviews, never merge). Session-only — died with each session, recreate on session start
+  (previous: ee2c63d1). Delete when all are merged or Alex says stop.
+- **Infra PR: abanna/floci-ui#1** (5 commits: 804ea04, 4e1841e, 5d41653, cadf999, d809b50).
+  Working tree clean for runner files (HANDOFF.md itself may lag).
+- **CLOSED: demo-repository main `Proof HTML` (docker actions) — root cause found and fixed
+  live (2026-09-02 ~02:20Z).** The runner spawns `docker` with `HOME=/github/home` for
+  docker-based actions → podman finds no user containers.conf → falls back to system defaults
+  → **shm locks** → `/dev/shm` absent in the CF sandbox → "failed to get new shm lock manager".
+  NOT stale-image skew (all instances were on one digest). Fix = ship the same podman config
+  (cgroups disabled, file locks, file events) at **/etc/containers/containers.conf** in the
+  image (v39) — system config is read in every HOME/mode. Reproduced + fix validated live via
+  `nerds-run/cf-runner-test` workflow (repro matrix: baseline OK, HOME unset OK,
+  HOME=/github/home FAILS rc=125 → after /etc config OK). Demo run 33555527598 attempt 10
+  = **success** on cf-runner-0. Fleet: v39 deployed via wrangler, 6/6 runners online,
+  `max_instances` restored to **6** (wrangler.jsonc still said 3 — every wrangler deploy was
+  silently regressing the fleet scale; fixed in d809b50).
+- **Watch item**: runner-0's container died right after a successful job (02:18:42, no
+  entrypoint logs) — `POST /wake` self-heals (fresh boot + register). If wake starts failing
+  with "Maximum number of running container instances exceeded" while nothing is running,
+  that's the old zombie-slot accounting → bump `max_instances` (the prior workaround was 9).
+- **Perf reality (measured)**: cf-runners are 2–4× slower per job than Blacksmith on
+  compile-heavy work (disk character + cold caches); parity for light jobs. Alex declined paying
+  for Blacksmith. Mitigations shipped: tmpfs RAM caches, R2 fleet cache, toolcache pre-bake,
+  2h warm windows, 6 instances, ENAM placement.
 
 ---
 
@@ -94,26 +122,45 @@ comments rewritten, fork-PR trust answered (private repos, org-member forks, no 
 - Repo-side fixes pushed to PR branches: go-tdad test timeouts (10m→20m/40m/30m cold-cache
   measurements), elliot trivy pin v0.2.2→v0.3.1 + gofmt config.go, demo auto-assign issues-only,
   incidents CodeQL back to hosted (repo lacks Advanced Security — GHAS decision is Alex's).
-- KNOWN ISSUE: 3 DOs (runner-2/3/5) wedged — platform counts them running though the instances
-  list says inactive; no per-instance kill API. Fix = delete+recreate the containers app (needs
-  Alex's approval; config: v31, standard-4, instances/max 6, ENAM, DO namespace
-  38f32b04c4884c2b8a75dd6d7a4089c9). Infra PR: abanna/floci-ui#1.
+- KNOWN ISSUE (partially resolved): stale containers can survive rollouts (SDK stop no-ops on
+  wedged state) → mixed image versions for up to 2h. Force-refresh = `probe=stop` ×6, settle 150s,
+  wake. max_instances=9 works around zombie slot accounting (was 6). Delete+recreate of the
+  containers app clears everything but needs Alex's explicit approval (config: standard-4 ×6,
+  ENAM, DO namespace 38f32b04c4884c2b8a75dd6d7a4089c9). Infra PR: abanna/floci-ui#1.
 
 ### Recommended next tasks (in order)
-1. **Commit the branch** + PR (now includes SDK worker + v18–v26 image work; Alex's go-ahead pending).
-2. Let the rerun wave drain; cron `ee2c63d1` (session-only, /20min) polls PRs: failures → diagnose,
-   review comments → respond; report ready-to-merge set to Alex. NEVER self-merge.
-3. Optionally: import live CF resources into Pulumi state (webhook already is; containers app is not).
-4. Hardening: swap Alex's broad gh token for a fine-grained PAT (Self-hosted runners: RW).
-5. Optional: custom domain on the worker; compose/buildx support (podman system service) if a repo
-   genuinely needs it.
+1. **Alex merges the 6 green PRs** + decides incidents GHAS-vs-drop + reviews abanna/floci-ui#1.
+2. **Unlock 1Password → commit the 2 dangling files** (Dockerfile + network-wrapper.sh, see top).
+3. Close the demo Proof HTML thread: verify a main-push run passes on the wrangler-deployed
+   image; if the shm-lock error persists, diff the wrangler-built image's containers.conf.
+4. Optionally: import the containers app into Pulumi state; fine-grained PAT swap; custom domain;
+   compose/buildx (podman system service) if a repo needs it.
 
 ## Ops recipes (gotchas that cost time — don't re-derive)
+- **`wrangler deploy` applies wrangler.jsonc app config too** (max_instances, instance_type) —
+  keep that file in sync with the intended fleet or every deploy silently regresses it
+  (it rolled 9→3 once; d809b50 pinned 6).
+- **Which image is a runner on?** Boot-time podman smoke passes on old AND new images — useless
+  for discrimination. From a job on the runner: `cat /etc/containers/containers.conf` (present
+  = v39+). Use the `nerds-run/cf-runner-test` workflow (workflow_dispatch) as the live probe —
+  it runs ON a runner with full host-container context; steps run with `bash -e`, so start
+  repro scripts with `set +e`.
+- **Debugging docker-action failures**: `nerds-run/cf-runner-test` holds the repro matrix for
+  the HOME=/github/home podman lock issue (see CLOSED thread in header). Docker actions set
+  HOME=/github/home in the step env; anything reading `$HOME/.config` breaks silently.
+- **Deploy images via `wrangler deploy`** (in infra/runners/worker): builds + pushes the
+  Dockerfile with wrangler's OAuth + rolls the app — NO registry JWTs, NO manual rollout API
+  calls (those 401'd flakily late-session). Then ALWAYS: `probe=stop` ×6 → settle 150s → wake
+  (rollout/env-less boots die instantly; SDK state needs the reset; wake injects env).
+  NOTE: even then, an instance can boot a stale layer right after a push (runner-0 failed
+  post-roll, passed after a second stop+wake) — if a job fails with an error the new image
+  already fixed, stop that instance and rerun before re-diagnosing.
+- **Registry JWTs** (only needed for manual pushes): 15–20 min TTL, mint right before push.
+  Docker login 401s are usually expiry or registry auth flakiness — clear
+  `~/.docker/config.json` auths entry, re-mint, retry.
 - **Logs**: container stdout is NOT captured anywhere → entrypoint ships logs via
-  `curl $WORKER_URL/debug/log`. Read them: telemetry query
-  `POST /accounts/{id}/workers/observability/telemetry/query` `{view:"events", limit:N,
-  timeframe:{from,to}, parameters:{datasets:["cloudflare-workers"], filters:[{key:"$workers.scriptName",
-  operation:"eq", value:"nerds-run-gh-runners", type:"string"}]}}` (dataset is `cloudflare-workers`,
+  `curl $WORKER_URL/debug/log`. Read them: **`bunx wrangler tail nerds-run-gh-runners`** (the
+  telemetry API needs scopes we lack — 400/401/403 via MCP, wrangler OAuth, and Pulumi tokens).
   NOT `workers_logs`).
 - **Wake pool**: `curl -X POST -H "Authorization: Bearer $(pulumi -C infra/runners stack output webhookSecret --show-secrets)" https://nerds-run-gh-runners.solvedgg.workers.dev/wake`
 - **Deploy worker**: `cd infra/runners/worker && CLOUDFLARE_API_TOKEN=$(grep -oP 'oauth_token = "\K[^"]+' ~/.config/.wrangler/config/default.toml) bunx wrangler deploy`
